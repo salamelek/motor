@@ -6,22 +6,19 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
+#define TDC_MULTIPLIER 1.5f
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
-
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
@@ -35,8 +32,9 @@ const osThreadAttr_t defaultTask_attributes = {
   .stack_size = 128 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
-/* USER CODE BEGIN PV */
 
+/* USER CODE BEGIN PV */
+osMessageQueueId_t hallQueueHandle;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -47,12 +45,11 @@ static void MX_TIM2_Init(void);
 void StartDefaultTask(void *argument);
 
 /* USER CODE BEGIN PFP */
-
+void magnet_interrupt();
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-
 /* USER CODE END 0 */
 
 /**
@@ -63,7 +60,6 @@ int main(void)
 {
 
   /* USER CODE BEGIN 1 */
-
   /* USER CODE END 1 */
 
   /* MPU Configuration--------------------------------------------------------*/
@@ -75,21 +71,19 @@ int main(void)
   HAL_Init();
 
   /* USER CODE BEGIN Init */
-
   /* USER CODE END Init */
 
   /* Configure the system clock */
   SystemClock_Config();
 
   /* USER CODE BEGIN SysInit */
-
   /* USER CODE END SysInit */
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_TIM2_Init();
-  /* USER CODE BEGIN 2 */
 
+  /* USER CODE BEGIN 2 */
   /* USER CODE END 2 */
 
   /* Init scheduler */
@@ -133,11 +127,58 @@ int main(void)
   while (1)
   {
     /* USER CODE END WHILE */
-
     /* USER CODE BEGIN 3 */
   }
   /* USER CODE END 3 */
 }
+
+
+HAL_GPIO_EXTI_Callback(GPIO_Pin) {
+	switch (GPIO_Pin) {
+		case Hall_sensor_Pin:
+			magnet_interrupt();
+			break;
+		case Blue_button_Pin:
+			break;
+	}
+}
+
+
+void magnet_interrupt() {
+	// Capture the current timer value
+	uint32_t current_capture = __HAL_TIM_GET_COUNTER(&htim2);
+
+	// Calculate the delta (time difference)
+	static uint32_t prev_capture = 0;
+	uint32_t delta;
+
+	// check for timer overflow
+	if (current_capture >= prev_capture) {
+	    delta = current_capture - prev_capture;
+	} else {
+	    delta = (0xFFFFFFFF - prev_capture) + current_capture + 1;
+	}
+
+	prev_capture = current_capture;
+
+	// Detect TDC based on delta
+	static uint32_t prev_delta = 0;
+	bool TDC_detected = (delta > prev_delta * TDC_MULTIPLIER);
+	prev_delta = delta;
+
+	struct {
+		uint32_t delta;
+		bool TDC_detected;
+	} msg = {delta, TDC_detected};
+
+	// Send the message to the queue
+	osStatus_t status = osMessageQueuePut(hallQueueHandle, &msg, 0, 0);
+
+	if (status != osOK) {
+		// TODO flash some led and write something on the screen
+	}
+}
+
 
 /**
   * @brief System Clock Configuration
@@ -321,16 +362,6 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
-
-HAL_GPIO_EXTI_Callback(GPIO_Pin) {
-	switch (GPIO_Pin) {
-		case Hall_sensor_Pin:
-			break;
-		case Blue_button_Pin:
-			break;
-	}
-}
-
 /* USER CODE END 4 */
 
 /* USER CODE BEGIN Header_StartDefaultTask */
