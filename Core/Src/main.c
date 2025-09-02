@@ -145,14 +145,10 @@ HAL_GPIO_EXTI_Callback(GPIO_Pin) {
 
 
 void magnet_interrupt() {
-	// Capture the current timer value
 	uint32_t current_capture = __HAL_TIM_GET_COUNTER(&htim2);
-
-	// Calculate the delta (time difference)
 	static uint32_t prev_capture = 0;
 	uint32_t delta;
 
-	// check for timer overflow
 	if (current_capture >= prev_capture) {
 	    delta = current_capture - prev_capture;
 	} else {
@@ -161,17 +157,25 @@ void magnet_interrupt() {
 
 	prev_capture = current_capture;
 
-	// Detect TDC based on delta
 	static uint32_t prev_delta = 0;
+    static uint32_t tooth_count = 0;
+
 	bool TDC_detected = (delta > prev_delta * TDC_MULTIPLIER);
+
+	if (TDC_detected) {
+		tooth_count = 0;
+	} else {
+		tooth_count++;
+	}
+
 	prev_delta = delta;
 
 	struct {
 		uint32_t delta;
 		bool TDC_detected;
-	} msg = {delta, TDC_detected};
+		uint32_t tooth_count;
+	} msg = {delta, TDC_detected, tooth_count};
 
-	// Send the message to the queue
 	osStatus_t status = osMessageQueuePut(hallQueueHandle, &msg, 0, 0);
 
 	if (status != osOK) {
