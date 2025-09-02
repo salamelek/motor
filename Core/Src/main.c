@@ -15,6 +15,7 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 #define TDC_MULTIPLIER 1.5f
+#define TEETH_NUM 8		// including the missing tooth
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -25,16 +26,16 @@
 
 TIM_HandleTypeDef htim2;
 
-/* Definitions for defaultTask */
-osThreadId_t defaultTaskHandle;
-const osThreadAttr_t defaultTask_attributes = {
-  .name = "defaultTask",
+/* Definitions for rpmCounter */
+osThreadId_t rpmCounterHandle;
+const osThreadAttr_t rpmCounter_attributes = {
+  .name = "rpmCounter",
   .stack_size = 128 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
-
 /* USER CODE BEGIN PV */
 osMessageQueueId_t hallQueueHandle;
+volatile float current_rpm;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -42,7 +43,7 @@ void SystemClock_Config(void);
 static void MPU_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_TIM2_Init(void);
-void StartDefaultTask(void *argument);
+void StartRpmCounter(void *argument);
 
 /* USER CODE BEGIN PFP */
 void magnet_interrupt();
@@ -82,7 +83,6 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_TIM2_Init();
-
   /* USER CODE BEGIN 2 */
   /* USER CODE END 2 */
 
@@ -106,8 +106,8 @@ int main(void)
   /* USER CODE END RTOS_QUEUES */
 
   /* Create the thread(s) */
-  /* creation of defaultTask */
-  defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
+  /* creation of rpmCounter */
+  rpmCounterHandle = osThreadNew(StartRpmCounter, NULL, &rpmCounter_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -127,62 +127,11 @@ int main(void)
   while (1)
   {
     /* USER CODE END WHILE */
+
     /* USER CODE BEGIN 3 */
   }
   /* USER CODE END 3 */
 }
-
-
-HAL_GPIO_EXTI_Callback(GPIO_Pin) {
-	switch (GPIO_Pin) {
-		case Hall_sensor_Pin:
-			magnet_interrupt();
-			break;
-		case Blue_button_Pin:
-			break;
-	}
-}
-
-
-void magnet_interrupt() {
-	uint32_t current_capture = __HAL_TIM_GET_COUNTER(&htim2);
-	static uint32_t prev_capture = 0;
-	uint32_t delta;
-
-	if (current_capture >= prev_capture) {
-	    delta = current_capture - prev_capture;
-	} else {
-	    delta = (0xFFFFFFFF - prev_capture) + current_capture + 1;
-	}
-
-	prev_capture = current_capture;
-
-	static uint32_t prev_delta = 0;
-    static uint32_t tooth_count = 0;
-
-	bool TDC_detected = (delta > prev_delta * TDC_MULTIPLIER);
-
-	if (TDC_detected) {
-		tooth_count = 0;
-	} else {
-		tooth_count++;
-	}
-
-	prev_delta = delta;
-
-	struct {
-		uint32_t delta;
-		bool TDC_detected;
-		uint32_t tooth_count;
-	} msg = {delta, TDC_detected, tooth_count};
-
-	osStatus_t status = osMessageQueuePut(hallQueueHandle, &msg, 0, 0);
-
-	if (status != osOK) {
-		// TODO flash some led and write something on the screen
-	}
-}
-
 
 /**
   * @brief System Clock Configuration
@@ -366,23 +315,106 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+
+
+HAL_GPIO_EXTI_Callback(GPIO_Pin) {
+	switch (GPIO_Pin) {
+		case Hall_sensor_Pin:
+			magnet_interrupt();
+			break;
+		case Blue_button_Pin:
+			break;
+	}
+}
+
+
+void magnet_interrupt() {
+	uint32_t current_capture = __HAL_TIM_GET_COUNTER(&htim2);
+	static uint32_t prev_capture = 0;
+	uint32_t delta;
+
+	if (current_capture >= prev_capture) {
+	    delta = current_capture - prev_capture;
+	} else {
+	    delta = (0xFFFFFFFF - prev_capture) + current_capture + 1;
+	}
+
+	prev_capture = current_capture;
+
+	static uint32_t prev_delta = 0;
+    static uint32_t tooth_count = 0;
+
+	bool TDC_detected = (delta > prev_delta * TDC_MULTIPLIER);
+
+	if (TDC_detected) {
+		tooth_count = 0;
+	} else {
+		tooth_count++;
+	}
+
+	prev_delta = delta;
+
+	struct {
+		uint32_t delta;
+		bool TDC_detected;
+		uint32_t tooth_count;
+	} msg = {delta, TDC_detected, tooth_count};
+
+	osStatus_t status = osMessageQueuePut(hallQueueHandle, &msg, 0, 0);
+
+	if (status != osOK) {
+		// TODO flash some led and write something on the screen
+	}
+}
+
+
 /* USER CODE END 4 */
 
-/* USER CODE BEGIN Header_StartDefaultTask */
+/* USER CODE BEGIN Header_StartRpmCounter */
 /**
-  * @brief  Function implementing the defaultTask thread.
+  * @brief  Function implementing the rpmCounter thread.
   * @param  argument: Not used
   * @retval None
   */
-/* USER CODE END Header_StartDefaultTask */
-void StartDefaultTask(void *argument)
+/* USER CODE END Header_StartRpmCounter */
+void StartRpmCounter(void *argument)
 {
   /* USER CODE BEGIN 5 */
-  /* Infinite loop */
-  for(;;)
-  {
-    osDelay(1);
-  }
+	struct {
+		uint32_t delta;       // Timer ticks between teeth
+		bool TDC_detected;    // Flag from ISR
+		uint32_t tooth_count; // Teeth since last TDC
+	} msg;
+
+	float rpm = 0.0f;
+	const uint32_t expected_teeth = TEETH_NUM;
+	const float timer_hz = TIMER_CLOCK_HZ;
+
+	for (;;) {
+		if (osMessageQueueGet(hallQueueHandle, &msg, NULL, osWaitForever) != osOK) {
+			return;
+		}
+
+		if (msg.TDC_detected && msg.tooth_count != expected_teeth - 1) {
+			// Handle error: misaligned wheel, skipped pulse, etc.
+			// continue;
+		}
+
+		// Calculate instantaneous RPM when TDC is detected
+		if (msg.TDC_detected) {
+			// Time for one revolution = delta * number of teeth since last TDC
+			float time_per_rev_sec = (float)(msg.delta * msg.tooth_count) / timer_hz;
+
+			if (time_per_rev_sec > 0.0f) {
+				rpm = 60.0f / time_per_rev_sec; // convert seconds per rev to RPM
+			}
+
+			current_rpm = rpm;
+		}
+
+		// Optional: you can also compute instantaneous tooth timing
+		// float instant_rpm = 60.0f * timer_hz / msg.delta;
+	}
   /* USER CODE END 5 */
 }
 
