@@ -6,6 +6,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "stdbool.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -16,6 +17,7 @@
 /* USER CODE BEGIN PD */
 #define TDC_MULTIPLIER 1.5f
 #define TEETH_NUM 8		// including the missing tooth
+#define TIMER_CLOCK_HZ 100
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -33,6 +35,13 @@ const osThreadAttr_t rpmCounter_attributes = {
   .stack_size = 128 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
+/* Definitions for lcdUpdateTask */
+osThreadId_t lcdUpdateTaskHandle;
+const osThreadAttr_t lcdUpdateTask_attributes = {
+  .name = "lcdUpdateTask",
+  .stack_size = 128 * 4,
+  .priority = (osPriority_t) osPriorityLow,
+};
 /* USER CODE BEGIN PV */
 osMessageQueueId_t hallQueueHandle;
 volatile float current_rpm;
@@ -44,6 +53,7 @@ static void MPU_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_TIM2_Init(void);
 void StartRpmCounter(void *argument);
+void StartLcdUpdateTask(void *argument);
 
 /* USER CODE BEGIN PFP */
 void magnet_interrupt();
@@ -108,6 +118,9 @@ int main(void)
   /* Create the thread(s) */
   /* creation of rpmCounter */
   rpmCounterHandle = osThreadNew(StartRpmCounter, NULL, &rpmCounter_attributes);
+
+  /* creation of lcdUpdateTask */
+  lcdUpdateTaskHandle = osThreadNew(StartLcdUpdateTask, NULL, &lcdUpdateTask_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -259,6 +272,7 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOI_CLK_ENABLE();
   __HAL_RCC_GPIOJ_CLK_ENABLE();
+  __HAL_RCC_GPIOH_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(Green_LED_GPIO_Port, Green_LED_Pin, GPIO_PIN_RESET);
@@ -275,12 +289,6 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(Green_LED_GPIO_Port, &GPIO_InitStruct);
-
-  /*Configure GPIO pin : Hall_sensor_Pin */
-  GPIO_InitStruct.Pin = Hall_sensor_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(Hall_sensor_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pin : Blue_button_Pin */
   GPIO_InitStruct.Pin = Blue_button_Pin;
@@ -302,9 +310,15 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(Green_LEDJ2_GPIO_Port, &GPIO_InitStruct);
 
+  /*Configure GPIO pin : Hall_sensor_stmod_Pin */
+  GPIO_InitStruct.Pin = Hall_sensor_stmod_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(Hall_sensor_stmod_GPIO_Port, &GPIO_InitStruct);
+
   /* EXTI interrupt init*/
-  HAL_NVIC_SetPriority(Hall_sensor_EXTI_IRQn, 5, 0);
-  HAL_NVIC_EnableIRQ(Hall_sensor_EXTI_IRQn);
+  HAL_NVIC_SetPriority(Hall_sensor_stmod_EXTI_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(Hall_sensor_stmod_EXTI_IRQn);
 
   HAL_NVIC_SetPriority(Blue_button_EXTI_IRQn, 5, 0);
   HAL_NVIC_EnableIRQ(Blue_button_EXTI_IRQn);
@@ -317,9 +331,9 @@ static void MX_GPIO_Init(void)
 /* USER CODE BEGIN 4 */
 
 
-HAL_GPIO_EXTI_Callback(GPIO_Pin) {
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
 	switch (GPIO_Pin) {
-		case Hall_sensor_Pin:
+		case Hall_sensor_stmod_Pin:
 			magnet_interrupt();
 			break;
 		case Blue_button_Pin:
@@ -328,6 +342,10 @@ HAL_GPIO_EXTI_Callback(GPIO_Pin) {
 }
 
 
+/*
+Ko magnet triggera senzor, se bo klical ta interrupt
+Interrupt bo izračunal čas med dvema frontama, št. zobov in tdc in poslal v vrsto
+*/
 void magnet_interrupt() {
 	uint32_t current_capture = __HAL_TIM_GET_COUNTER(&htim2);
 	static uint32_t prev_capture = 0;
@@ -381,9 +399,9 @@ void StartRpmCounter(void *argument)
 {
   /* USER CODE BEGIN 5 */
 	struct {
-		uint32_t delta;       // Timer ticks between teeth
-		bool TDC_detected;    // Flag from ISR
-		uint32_t tooth_count; // Teeth since last TDC
+		uint32_t delta;
+		bool TDC_detected;
+		uint32_t tooth_count;
 	} msg;
 
 	float rpm = 0.0f;
@@ -412,10 +430,42 @@ void StartRpmCounter(void *argument)
 			current_rpm = rpm;
 		}
 
+
+
 		// Optional: you can also compute instantaneous tooth timing
 		// float instant_rpm = 60.0f * timer_hz / msg.delta;
 	}
   /* USER CODE END 5 */
+}
+
+/* USER CODE BEGIN Header_StartLcdUpdateTask */
+/**
+* @brief Function implementing the lcdUpdateTask thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartLcdUpdateTask */
+void StartLcdUpdateTask(void *argument)
+{
+  /* USER CODE BEGIN StartLcdUpdateTask */
+	/*
+	char buffer[32];
+
+	BSP_LCD_SetFont(&Font24);
+	BSP_LCD_SetTextColor(LCD_COLOR_DARKBLUE);
+	BSP_LCD_SetBackColor(LCD_COLOR_WHITE);
+
+	for(;;) {
+		// Format RPM into string
+		snprintf(buffer, sizeof(buffer), "RPM: %lu   ", current_rpm);
+
+		// Print at a fixed position
+		BSP_LCD_DisplayStringAtLine(5, (uint8_t *)buffer);
+
+		osDelay(200);
+	}
+	*/
+  /* USER CODE END StartLcdUpdateTask */
 }
 
  /* MPU Configuration */

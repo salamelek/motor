@@ -59,9 +59,6 @@ void Error_Handler(void);
 /* Private defines -----------------------------------------------------------*/
 #define Green_LED_Pin GPIO_PIN_3
 #define Green_LED_GPIO_Port GPIOD
-#define Hall_sensor_Pin GPIO_PIN_7
-#define Hall_sensor_GPIO_Port GPIOB
-#define Hall_sensor_EXTI_IRQn EXTI9_5_IRQn
 #define Blue_button_Pin GPIO_PIN_13
 #define Blue_button_GPIO_Port GPIOC
 #define Blue_button_EXTI_IRQn EXTI15_10_IRQn
@@ -69,6 +66,9 @@ void Error_Handler(void);
 #define Red_LED_GPIO_Port GPIOI
 #define Green_LEDJ2_Pin GPIO_PIN_2
 #define Green_LEDJ2_GPIO_Port GPIOJ
+#define Hall_sensor_stmod_Pin GPIO_PIN_8
+#define Hall_sensor_stmod_GPIO_Port GPIOH
+#define Hall_sensor_stmod_EXTI_IRQn EXTI9_5_IRQn
 
 /* USER CODE BEGIN Private defines */
 
